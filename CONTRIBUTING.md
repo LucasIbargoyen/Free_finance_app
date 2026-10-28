@@ -1,39 +1,103 @@
-# Padrão de codificação
+# Guia de contribuição
 
-- Utilize nomes de variáveis e funções em inglês.
-- Mantenha a indentação consistente.
-- Use comentários para explicar trechos de código complexos.
+Este guia descreve como trabalhar no Free Finance: o fluxo de trabalho, o padrão de codificação, as entidades do domínio, as estruturas de dados e a estimativa de volume que orienta as escolhas técnicas. O escopo do projeto está definido no Termo de Referência.
+
+## Fluxo de trabalho
+
+- A branch `main` guarda sempre uma versão que compila e roda. Não se faz commit direto nela.
+- Cada tarefa tem sua branch, criada a partir da `main`: `feature/nome-da-tarefa` para funcionalidades e `fix/nome-do-problema` para correções.
+- Os commits seguem o formato `tipo: descrição curta`, com os tipos `feat`, `fix`, `docs`, `refactor`, `test` e `chore`. Exemplo: `feat: add goal progress bar`.
+- O código entra na `main` por Pull Request, com uma descrição do que mudou e de como testar.
+- Cada módulo vem acompanhado de testes, e o projeto deve compilar antes do merge.
+
+## Padrão de codificação
+
+- Use nomes de variáveis, funções e classes em inglês.
+- Mantenha a indentação consistente, com 4 espaços, como no guia de estilo do Kotlin.
+- Siga as convenções do Kotlin: `PascalCase` para classes, `camelCase` para funções e variáveis, `UPPER_SNAKE_CASE` para constantes.
+- Use comentários para explicar o motivo de trechos complexos, não para repetir o que o código já diz.
 - Evite duplicação de código, criando funções reutilizáveis quando necessário.
-
+- Guarde valores monetários em centavos, em `Long`, ou em `BigDecimal`. Nunca use `Double` para dinheiro.
+- Não envie ao repositório arquivos de credenciais, como o `google-services.json`.
 
 ## Entidades
 
-- **Usuário**: Representa o usuário do aplicativo, contendo informações como nome, email e senha.
-- **Receita**: Representa uma entrada de receita, contendo informações como valor, categoria e data.
-- **Despesa**: Representa uma entrada de despesa, contendo informações como valor, categoria e data.
-- **Relatório**: Representa um relatório financeiro, contendo informações sobre receitas e despesas em um determinado período.
+- **Usuário**: pessoa que usa o aplicativo, com nome e e-mail. A senha fica no serviço de autenticação e não é guardada no banco de dados.
+- **Objetivo**: meta financeira do usuário, com descrição, valor alvo e prazo.
+- **Contribuição**: valor que o usuário reserva para um objetivo, com valor e data.
+- **Gasto diário**: despesa do dia a dia registrada pelo usuário, com valor, descrição e data.
+- **Limite de gasto diário**: valor máximo que o usuário quer gastar em um dia.
 
-# Estimativa de volume de dados
+## Estrutura de dados
 
-As estimativas abaixo são hipóteses de dimensionamento, adotadas para orientar a escolha das estruturas de dados. O objetivo é definir a ordem de grandeza (centenas de MB no total, dezenas de KB por usuário), e não prever números exatos.
+Cada entidade é uma `data class` do Kotlin:
 
-- **Usuários**: adota-se como meta de escala 10.000 usuários ativos nos primeiros seis meses. Esse valor é um cenário de dimensionamento, não uma previsão de mercado, e serve para testar se a solução continua adequada em uma base grande. Cada usuário ocupa cerca de 200 bytes (identificador, nome, e-mail e datas), totalizando aproximadamente 2 MB. A senha não entra nesse cálculo, pois fica sob responsabilidade do serviço de autenticação. A operação predominante é a leitura única no login.
+```kotlin
+data class User(val id: String, val name: String, val email: String)
 
-- **Receitas e Despesas**: estima-se que cada usuário registre em média 20 transações por mês, o que representa o registro dos gastos e ganhos principais, e não de cada pequena compra. Com 10.000 usuários, isso resulta em aproximadamente 200.000 transações mensais. Assume-se que 85% sejam despesas (170.000/mês) e 15% receitas (30.000/mês), já que as despesas ocorrem com muito mais frequência que as entradas de renda. Considerando cerca de 150 bytes por transação (identificador, usuário, valor, categoria, data e descrição), o volume cresce cerca de 30 MB por mês, chegando a aproximadamente 1,2 milhão de registros e 180 MB em seis meses. Por usuário, o volume é de 240 transações por ano, ou cerca de 36 KB. A operação predominante é a inserção frequente e a consulta por período (mês).
+data class Goal(
+    val id: String,
+    val userId: String,
+    val description: String,
+    val targetAmountCents: Long,
+    val deadline: LocalDate,
+)
 
-- **Relatórios**: os relatórios não são armazenados, pois são calculados sob demanda a partir das receitas e despesas do período. Por isso, o volume armazenado dessa entidade é nulo, e a estimativa refere-se ao uso: espera-se que cerca de 50% dos usuários ativos acessem relatórios, resultando em aproximadamente 5.000 visualizações por mês. Cada relatório percorre em média 20 transações (as de um mês de um usuário), o que torna o cálculo barato.
+data class Contribution(
+    val id: String,
+    val goalId: String,
+    val amountCents: Long,
+    val date: LocalDate,
+)
 
-**Limitações das estimativas**
+data class DailyExpense(
+    val id: String,
+    val userId: String,
+    val amountCents: Long,
+    val description: String,
+    val date: LocalDate,
+)
 
-Os valores de transações por mês assumem todos os usuários ativos desde o primeiro mês, o que os torna um limite superior. Os tamanhos por registro são aproximados e não incluem o espaço adicional usado pelo banco de dados (índices e metadados).
+data class DailyLimit(val userId: String, val amountCents: Long)
+```
 
-**Implicações para as estruturas de dados**
+Regras de modelagem:
 
-Como cada usuário possui apenas dezenas de KB, todos os dados de um usuário cabem na memória do dispositivo, e o volume global é uma preocupação apenas do banco de dados. Isso permite usar, no aplicativo, listas ou mapas agrupados por mês, e justifica a agregação linear (O(n)) para gerar os relatórios.
+- O progresso e o status de um objetivo não são armazenados. O progresso é a soma das contribuições dividida pelo valor alvo, e um objetivo novo começa em 0%.
+- O tempo estimado de conclusão é calculado a partir do valor restante e da frequência das contribuições.
+- O aviso de limite é emitido quando a soma dos gastos do dia passa do limite.
+- No banco, uma organização possível é guardar objetivos e gastos de cada usuário em subcoleções do próprio usuário e as contribuições dentro de cada objetivo. Assim as consultas já saem filtradas por dono.
 
-# Estrutura de dados
+## Estimativa de volume de dados
 
-- **Usuário**: Estrutura contendo campos para nome, email e senha. Pode ser representada como uma classe ou struct.
-- **Receita**: Estrutura contendo campos para valor, categoria e data. Pode ser representada como uma classe ou struct.
-- **Despesa**: Estrutura contendo campos para valor, categoria e data.
-- **Relatório**: Estrutura contendo campos para receitas e despesas em um determinado período. Pode ser representada como uma classe ou struct.
+As estimativas abaixo são hipóteses de dimensionamento, adotadas para orientar a escolha das estruturas de dados. O objetivo é definir a ordem de grandeza, e não prever números exatos.
+
+Hipóteses:
+
+- **10.000 usuários ativos em seis meses.** É uma meta de escala para testar se a solução aguenta uma base grande, não uma previsão de mercado.
+- **3 objetivos por usuário**, uma média de metas ativas ao mesmo tempo.
+- **8 contribuições por usuário por mês**, cerca de duas por semana.
+- **60 gastos por usuário por mês**, cerca de dois por dia (um café, um lanche).
+- **1 limite de gasto diário por usuário.**
+
+| Coleção | Quantidade em 6 meses | Bytes por registro | Volume | Operação predominante |
+|---|---|---|---|---|
+| Usuários | 10.000 | 200 | 2 MB | Leitura única no login |
+| Objetivos | 30.000 | 150 | 4,5 MB | Listagem e leitura do progresso |
+| Contribuições | 480.000 | 60 | 28,8 MB | Inserção e soma por objetivo |
+| Gastos diários | 3.600.000 | 120 | 432 MB | Inserção e soma do dia |
+| Limites | 10.000 | 40 | 0,4 MB | Leitura a cada gasto registrado |
+| **Total** | | | **cerca de 468 MB** | |
+
+Por usuário, o volume é de cerca de 93 KB por ano, quase todo em gastos diários.
+
+### Implicações
+
+- Os dados de um usuário cabem inteiros na memória do dispositivo, então o volume total é uma preocupação apenas do banco de dados.
+- O cálculo do progresso soma as contribuições de um objetivo (cerca de 16 em seis meses), e o total do dia soma cerca de dois gastos. Uma passada linear (O(n)) basta, sem estrutura sofisticada.
+- As consultas mais frequentes são por usuário e por data, então a organização dos dados deve permitir filtrar por esses dois campos.
+- O plano gratuito do Firebase (Spark) inclui 1 GiB de armazenamento, 50 mil leituras por dia e 20 mil escritas por dia. Confira os valores atuais em firebase.google.com/pricing, pois eles mudam, e note que valem para o Firestore (o Realtime Database tem cotas diferentes). Os 468 MB cabem no armazenamento, mas, no limite superior de 10.000 usuários, as escritas chegam a cerca de 22.700 por dia (20.000 de gastos e 2.700 de contribuições) e passam da cota. Como o projeto não tem orçamento para serviços pagos, 10.000 usuários é uma meta teórica, e a demonstração com poucos usuários cabe com folga.
+
+### Limitações
+
+Os valores de uso mensal assumem todos os usuários ativos desde o primeiro mês, o que os torna um limite superior. Os tamanhos por registro são aproximados e não incluem o espaço adicional do banco de dados (índices e metadados).
